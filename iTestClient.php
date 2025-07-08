@@ -1,374 +1,279 @@
-<?php
-class WebSocketClient {
-    private $socket;
-    private $host;
-    private $port;
-    private $path;
-    private $isConnected = false;
-    private $key;
-
-    public function __construct($host = 'localhost', $port = 8080, $path = '/') {
-        $this->host = $host;
-        $this->port = $port;
-        $this->path = $path;
-    }
-
-    public function connect() {
-        // Create socket
-        $this->socket = socket_create(AF_INET, SOCK_STREAM, SOL_TCP);
-        if (!$this->socket) {
-            throw new Exception("Could not create socket");
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WebSocket Test Client</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background-color: #f5f5f5;
         }
-
-        // Connect to server
-        if (!socket_connect($this->socket, $this->host, $this->port)) {
-            throw new Exception("Could not connect to server");
-        }
-
-        // Perform WebSocket handshake
-        $this->performHandshake();
         
-        echo "Connected to WebSocket server at {$this->host}:{$this->port}\n";
-        $this->isConnected = true;
-    }
-
-    private function performHandshake() {
-        // Generate WebSocket key
-        $this->key = base64_encode(openssl_random_pseudo_bytes(16));
+        .container {
+            background: white;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }
         
-        // Create handshake request
-        $request = "GET {$this->path} HTTP/1.1\r\n";
-        $request .= "Host: {$this->host}:{$this->port}\r\n";
-        $request .= "Upgrade: websocket\r\n";
-        $request .= "Connection: Upgrade\r\n";
-        $request .= "Sec-WebSocket-Key: {$this->key}\r\n";
-        $request .= "Sec-WebSocket-Version: 13\r\n";
-        $request .= "\r\n";
-
-        // Send handshake request
-        socket_write($this->socket, $request, strlen($request));
-
-        // Read handshake response
-        $response = socket_read($this->socket, 1024);
+        h1 {
+            color: #333;
+            text-align: center;
+            margin-bottom: 30px;
+        }
         
-        // Validate handshake response
-        if (!$this->validateHandshake($response)) {
-            throw new Exception("WebSocket handshake failed");
+        .connection-status {
+            padding: 10px;
+            margin: 10px 0;
+            border-radius: 4px;
+            font-weight: bold;
+            text-align: center;
         }
-    }
-
-    private function validateHandshake($response) {
-        // Check for HTTP 101 Switching Protocols
-        if (strpos($response, '101 Switching Protocols') === false) {
-            return false;
-        }
-
-        // Extract Sec-WebSocket-Accept header
-        preg_match('/Sec-WebSocket-Accept: (.+)\r\n/', $response, $matches);
-        if (!$matches) {
-            return false;
-        }
-
-        $serverAccept = trim($matches[1]);
-        $expectedAccept = base64_encode(hash('sha1', $this->key . '258EAFA5-E914-47DA-95CA-C5AB0DC85B11', true));
-
-        return $serverAccept === $expectedAccept;
-    }
-
-    public function sendMessage($message) {
-        if (!$this->isConnected) {
-            throw new Exception("Not connected to WebSocket server");
-        }
-
-        $frame = $this->encodeFrame($message);
-        socket_write($this->socket, $frame, strlen($frame));
-        echo "Sent: $message\n";
-    }
-
-    private function encodeFrame($message) {
-        $length = strlen($message);
-        $frame = chr(129); // FIN + text frame
-
-        if ($length < 126) {
-            $frame .= chr($length | 128); // Mask bit set
-        } elseif ($length < 65536) {
-            $frame .= chr(126 | 128) . pack('n', $length); // Mask bit set
-        } else {
-            $frame .= chr(127 | 128) . pack('J', $length); // Mask bit set
-        }
-
-        // Generate mask
-        $mask = pack('N', rand());
-        $frame .= $mask;
-
-        // Mask payload
-        $masked = '';
-        for ($i = 0; $i < $length; $i++) {
-            $masked .= chr(ord($message[$i]) ^ ord($mask[$i % 4]));
-        }
-        $frame .= $masked;
-
-        return $frame;
-    }
-
-    public function receiveMessage() {
-        if (!$this->isConnected) {
-            return false;
-        }
-
-        $data = socket_read($this->socket, 1024);
-        if ($data === false || $data === '') {
-            return false;
-        }
-
-        return $this->decodeFrame($data);
-    }
-
-    private function decodeFrame($data) {
-        if (strlen($data) < 2) {
-            return false;
-        }
-
-        $firstByte = ord($data[0]);
-        $secondByte = ord($data[1]);
-
-        $fin = ($firstByte >> 7) & 1;
-        $opcode = $firstByte & 15;
-        $masked = ($secondByte >> 7) & 1;
-        $payloadLength = $secondByte & 127;
-
-        if (!$fin || $opcode != 1) { // Only handle text frames
-            return false;
-        }
-
-        $offset = 2;
-        if ($payloadLength == 126) {
-            $payloadLength = unpack('n', substr($data, $offset, 2))[1];
-            $offset += 2;
-        } elseif ($payloadLength == 127) {
-            $payloadLength = unpack('J', substr($data, $offset, 8))[1];
-            $offset += 8;
-        }
-
-        if ($masked) {
-            $mask = substr($data, $offset, 4);
-            $offset += 4;
-            $payload = substr($data, $offset, $payloadLength);
-            
-            // Unmask payload
-            $unmasked = '';
-            for ($i = 0; $i < $payloadLength; $i++) {
-                $unmasked .= chr(ord($payload[$i]) ^ ord($mask[$i % 4]));
-            }
-            return $unmasked;
-        } else {
-            return substr($data, $offset, $payloadLength);
-        }
-    }
-
-    public function disconnect() {
-        if ($this->isConnected) {
-            // Send close frame
-            $closeFrame = chr(136) . chr(128) . pack('N', rand()); // Close frame with mask
-            socket_write($this->socket, $closeFrame, strlen($closeFrame));
-            
-            socket_close($this->socket);
-            $this->isConnected = false;
-            echo "Disconnected from WebSocket server\n";
-        }
-    }
-
-    public function isConnected() {
-        return $this->isConnected;
-    }
-
-    public function listen() {
-        while ($this->isConnected) {
-            $read = [$this->socket];
-            $write = null;
-            $except = null;
-
-            if (socket_select($read, $write, $except, 0, 100000) > 0) {
-                $message = $this->receiveMessage();
-                if ($message !== false) {
-                    echo "Received: $message\n";
-                }
-            }
-        }
-    }
-}
-
-// Interactive Test Client
-class InteractiveWebSocketClient {
-    private $client;
-    private $running = true;
-
-    public function __construct($host = 'localhost', $port = 8080) {
-        $this->client = new WebSocketClient($host, $port);
-    }
-
-    public function start() {
-        echo "=== PHP WebSocket Test Client ===\n";
-        echo "Commands:\n";
-        echo "  connect - Connect to WebSocket server\n";
-        echo "  send <message> - Send a message\n";
-        echo "  listen - Start listening for messages\n";
-        echo "  disconnect - Disconnect from server\n";
-        echo "  test - Run automated test\n";
-        echo "  quit - Exit client\n";
-        echo "=====================================\n\n";
-
-        while ($this->running) {
-            echo "> ";
-            $input = trim(fgets(STDIN));
-            $this->processCommand($input);
-        }
-    }
-
-    private function processCommand($input) {
-        $parts = explode(' ', $input, 2);
-        $command = strtolower($parts[0]);
-        $args = isset($parts[1]) ? $parts[1] : '';
-
-        switch ($command) {
-            case 'connect':
-                $this->connect();
-                break;
-            
-            case 'send':
-                if (empty($args)) {
-                    echo "Usage: send <message>\n";
-                } else {
-                    $this->sendMessage($args);
-                }
-                break;
-            
-            case 'listen':
-                $this->listen();
-                break;
-            
-            case 'disconnect':
-                $this->disconnect();
-                break;
-            
-            case 'test':
-                $this->runTest();
-                break;
-            
-            case 'quit':
-            case 'exit':
-                $this->quit();
-                break;
-            
-            default:
-                echo "Unknown command: $command\n";
-                break;
-        }
-    }
-
-    private function connect() {
-        try {
-            $this->client->connect();
-        } catch (Exception $e) {
-            echo "Error: " . $e->getMessage() . "\n";
-        }
-    }
-
-    private function sendMessage($message) {
-        try {
-            $this->client->sendMessage($message);
-        } catch (Exception $e) {
-            echo "Error: " . $e->getMessage() . "\n";
-        }
-    }
-
-    private function listen() {
-        if (!$this->client->isConnected()) {
-            echo "Not connected to server\n";
-            return;
-        }
-
-        echo "Listening for messages... (Press Ctrl+C to stop)\n";
-        $this->client->listen();
-    }
-
-    private function disconnect() {
-        $this->client->disconnect();
-    }
-
-    private function runTest() {
-        echo "Running automated test...\n";
         
-        try {
-            // Connect
-            echo "1. Connecting to server...\n";
-            $this->client->connect();
+        .connected {
+            background-color: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .disconnected {
+            background-color: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+        
+        .controls {
+            margin: 20px 0;
+        }
+        
+        button {
+            background-color: #007bff;
+            color: white;
+            border: none;
+            padding: 10px 20px;
+            margin: 5px;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        
+        button:hover {
+            background-color: #0056b3;
+        }
+        
+        button:disabled {
+            background-color: #6c757d;
+            cursor: not-allowed;
+        }
+        
+        .message-area {
+            margin: 20px 0;
+        }
+        
+        .message-input {
+            display: flex;
+            gap: 10px;
+            margin: 10px 0;
+        }
+        
+        input[type="text"] {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 14px;
+        }
+        
+        .messages {
+            height: 300px;
+            overflow-y: auto;
+            border: 1px solid #ddd;
+            padding: 10px;
+            background-color: #f9f9f9;
+            font-family: monospace;
+            font-size: 12px;
+        }
+        
+        .message {
+            margin: 5px 0;
+            padding: 5px;
+            border-radius: 3px;
+        }
+        
+        .message.sent {
+            background-color: #e3f2fd;
+            border-left: 3px solid #2196f3;
+        }
+        
+        .message.received {
+            background-color: #f3e5f5;
+            border-left: 3px solid #9c27b0;
+        }
+        
+        .message.system {
+            background-color: #fff3e0;
+            border-left: 3px solid #ff9800;
+        }
+        
+        .timestamp {
+            color: #666;
+            font-size: 10px;
+        }
+        
+        .server-info {
+            background-color: #e7f3ff;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+        }
+        
+        .server-info h3 {
+            margin-top: 0;
+            color: #0066cc;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>WebSocket Test Client</h1>
+        
+        <div class="server-info">
+            <h3>Server Information</h3>
+            <p><strong>URL:</strong> ws://127.0.0.1:8080</p>
+            <p><strong>Protocol:</strong> WebSocket</p>
+            <p>Make sure the PHP WebSocket server is running before connecting.</p>
+        </div>
+        
+        <div id="connectionStatus" class="connection-status disconnected">
+            Disconnected
+        </div>
+        
+        <div class="controls">
+            <button id="connectBtn" onclick="connect()">Connect</button>
+            <button id="disconnectBtn" onclick="disconnect()" disabled>Disconnect</button>
+            <button onclick="clearMessages()">Clear Messages</button>
+        </div>
+        
+        <div class="message-area">
+            <div class="message-input">
+                <input type="text" id="messageInput" placeholder="Enter your message..." onkeypress="handleKeyPress(event)" disabled>
+                <button onclick="sendMessage()" id="sendBtn" disabled>Send</button>
+            </div>
             
-            // Send test messages
-            $testMessages = [
-                "Hello WebSocket!",
-                "This is a test message",
-                "Testing special characters: àáâãäåæçèéêë",
-                "Numbers: 123456789",
-                "Symbols: !@#$%^&*()",
-                "Long message: " . str_repeat("Lorem ipsum dolor sit amet, consectetur adipiscing elit. ", 10)
-            ];
-            
-            echo "2. Sending test messages...\n";
-            foreach ($testMessages as $i => $message) {
-                echo "   Sending message " . ($i + 1) . "...\n";
-                $this->client->sendMessage($message);
-                usleep(500000); // 500ms delay
-            }
-            
-            echo "3. Listening for responses...\n";
-            $startTime = time();
-            $messageCount = 0;
-            
-            while (time() - $startTime < 10 && $messageCount < count($testMessages)) {
-                $read = [$this->client->socket ?? null];
-                $write = null;
-                $except = null;
+            <div id="messages" class="messages"></div>
+        </div>
+    </div>
+
+    <script>
+        let ws = null;
+        let isConnected = false;
+        
+        function connect() {
+            try {
+                ws = new WebSocket('ws://127.0.0.1:8080');
                 
-                if ($read[0] && socket_select($read, $write, $except, 0, 100000) > 0) {
-                    $message = $this->client->receiveMessage();
-                    if ($message !== false) {
-                        echo "   Received: $message\n";
-                        $messageCount++;
+                ws.onopen = function(event) {
+                    isConnected = true;
+                    updateConnectionStatus();
+                    addMessage('Connected to WebSocket server', 'system');
+                };
+                
+                ws.onmessage = function(event) {
+                    try {
+                        const data = JSON.parse(event.data);
+                        addMessage(`${data.message} (${data.timestamp})`, 'received');
+                    } catch (e) {
+                        addMessage(event.data, 'received');
                     }
-                }
+                };
+                
+                ws.onclose = function(event) {
+                    isConnected = false;
+                    updateConnectionStatus();
+                    addMessage('Disconnected from WebSocket server', 'system');
+                };
+                
+                ws.onerror = function(error) {
+                    addMessage('Connection error: ' + error, 'system');
+                };
+                
+            } catch (error) {
+                addMessage('Failed to connect: ' + error.message, 'system');
             }
-            
-            echo "4. Disconnecting...\n";
-            $this->client->disconnect();
-            
-            echo "Test completed successfully!\n";
-            echo "Messages sent: " . count($testMessages) . "\n";
-            echo "Messages received: $messageCount\n";
-            
-        } catch (Exception $e) {
-            echo "Test failed: " . $e->getMessage() . "\n";
         }
-    }
-
-    private function quit() {
-        echo "Goodbye!\n";
-        $this->client->disconnect();
-        $this->running = false;
-    }
-}
-
-// Usage
-if (php_sapi_name() === 'cli') {
-    // Check command line arguments
-    $host = $argv[1] ?? 'localhost';
-    $port = $argv[2] ?? 8080;
-    
-    echo "Starting WebSocket client for $host:$port\n";
-    
-    $testClient = new InteractiveWebSocketClient($host, $port);
-    $testClient->start();
-} else {
-    echo "This script must be run from the command line\n";
-}
-?>
+        
+        function disconnect() {
+            if (ws) {
+                ws.close();
+            }
+        }
+        
+        function sendMessage() {
+            const input = document.getElementById('messageInput');
+            const message = input.value.trim();
+            
+            if (message && ws && isConnected) {
+                ws.send(message);
+                addMessage(message, 'sent');
+                input.value = '';
+            }
+        }
+        
+        function addMessage(message, type) {
+            const messagesDiv = document.getElementById('messages');
+            const messageDiv = document.createElement('div');
+            messageDiv.className = `message ${type}`;
+            
+            const timestamp = new Date().toLocaleTimeString();
+            messageDiv.innerHTML = `
+                <div>${message}</div>
+                <div class="timestamp">${timestamp}</div>
+            `;
+            
+            messagesDiv.appendChild(messageDiv);
+            messagesDiv.scrollTop = messagesDiv.scrollHeight;
+        }
+        
+        function clearMessages() {
+            document.getElementById('messages').innerHTML = '';
+        }
+        
+        function updateConnectionStatus() {
+            const statusDiv = document.getElementById('connectionStatus');
+            const connectBtn = document.getElementById('connectBtn');
+            const disconnectBtn = document.getElementById('disconnectBtn');
+            const messageInput = document.getElementById('messageInput');
+            const sendBtn = document.getElementById('sendBtn');
+            
+            if (isConnected) {
+                statusDiv.textContent = 'Connected';
+                statusDiv.className = 'connection-status connected';
+                connectBtn.disabled = true;
+                disconnectBtn.disabled = false;
+                messageInput.disabled = false;
+                sendBtn.disabled = false;
+            } else {
+                statusDiv.textContent = 'Disconnected';
+                statusDiv.className = 'connection-status disconnected';
+                connectBtn.disabled = false;
+                disconnectBtn.disabled = true;
+                messageInput.disabled = true;
+                sendBtn.disabled = true;
+            }
+        }
+        
+        function handleKeyPress(event) {
+            if (event.key === 'Enter') {
+                sendMessage();
+            }
+        }
+        
+        // Initialize the UI
+        updateConnectionStatus();
+    </script>
+</body>
+</html>
